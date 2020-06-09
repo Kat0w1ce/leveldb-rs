@@ -1,5 +1,10 @@
 use super::util::memory::memcmp;
-use std::{cmp::Ordering, ops::Index, ptr, slice};
+use std::{
+    cmp::Ordering,
+    hash::{Hash, Hasher},
+    ops::Index,
+    ptr, slice,
+};
 pub struct Slice {
     data: *const u8,
     size: usize,
@@ -36,7 +41,7 @@ impl Slice {
         self.data = ptr::null_mut();
         self.size = 0;
     }
-    fn remove_prefix(&mut self, n: usize) {
+    pub fn remove_prefix(&mut self, n: usize) {
         assert!(n < self.size());
         unsafe {
             self.data = self.data.offset(n as isize);
@@ -97,6 +102,11 @@ impl PartialEq for Slice {
     }
 }
 
+impl Hash for Slice {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write(self.data());
+    }
+}
 impl Eq for Slice {}
 #[cfg(test)]
 mod test_slice {
