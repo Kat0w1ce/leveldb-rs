@@ -1,1 +1,2 @@
-mod arena;
+pub mod arena;
+pub mod memory;
