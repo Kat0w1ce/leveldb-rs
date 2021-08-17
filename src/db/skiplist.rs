@@ -1,14 +1,17 @@
+//unthread-safe-edtion
+//d
+
 use super::ldbslice::{self, Slice};
 use atomic::Atomic;
 use bumpalo::{collections::Vec as arena, Bump};
 use rand::rngs::StdRng;
+
 use std::cell::RefCell;
-use std::cmp::Ordering;
+
 use std::mem::{replace, size_of};
 use std::rc::Rc;
 use std::sync::atomic::AtomicUsize;
 use std::vec;
-//thread-safe or not?
 pub struct Skiplist {
     innerSkiplist: Rc<RefCell<innerSkiplist>>,
 }
@@ -17,8 +20,8 @@ pub struct Skiplist {
 struct node {
     key: ldbslice::Slice, //todo
     // value: ldbslice::Slice,
-    // skips: Vec<Option<*mut node>>,
-    skips: Vec<atomic::Atomic<Option<*mut node>>>,
+    skips: Vec<Option<*mut node>>,
+    // skips: Vec<atomic::Atomic<Option<*mut node>>>,
     next: Option<Box<node>>,
 }
 
