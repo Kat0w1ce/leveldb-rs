@@ -1,10 +1,9 @@
 use std::cell::RefCell;
-use std::mem;
-use std::mem::size_of;
 use std::ptr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::Arc;
-
+// use std::mem;
+// use std::mem::size_of;
 const BLOCK_SIZE: usize = 4096;
 
 pub trait ArenaTrait {
@@ -34,10 +33,26 @@ pub struct OffsetArena {
 //     }
 // }
 
+//TODO: to avoid ownership problem  and make allocation lock-free
+// make properties atomic
+// use Arc<BlockArena> for thread-safe
+/// `BlockArena` must only be used with single thread writing since we use `RefCell` when
+/// allocating new blocks.
 // reference from  leveldb arena
 pub struct BlockArena {
     alloc_ptr: *mut u8,
     alloc_bytes_remaining: usize,
+    blocks: RefCell<Vec<Vec<u8>>>,
+    // Total memory usage of the arena.
+    // comments in leveldb
+    // TODO(costan): This member is accessed via atomics, but the others are
+    //               accessed without any locking. Is this OK?
+    memory_usage: AtomicUsize,
+}
+pub struct LockFreeBlockArena {
+    alloc_ptr: AtomicPtr<u8>,
+    alloc_bytes_remaining: usize,
+    // is there a conllection which writing lock-free and threadsafe
     blocks: RefCell<Vec<Vec<u8>>>,
     // Total memory usage of the arena.
     // comments in leveldb
