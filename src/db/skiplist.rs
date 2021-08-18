@@ -49,17 +49,19 @@ impl Node {
     }
 
     fn next(&self, height: usize) -> *mut Node {
-        // unsafe {
-        //     self.next_nodes
-        //         .get_unchecked(height)
-        //         .load(Ordering::Acquire)
-        // }
-        self.next_nodes[height].load(Ordering::Acquire)
+        unsafe {
+            self.next_nodes
+                .get_unchecked(height)
+                .load(Ordering::Acquire)
+        }
     }
 
     fn set_next(&self, height: usize, node: *mut Node) {
         unsafe {
-            self.next_nodes[height].store(node, Ordering::Release);
+            // self.next_nodes[height].store(node, Ordering::Release);
+            self.next_nodes
+                .get_unchecked(height)
+                .store(node, Ordering::Release);
         }
     }
 
@@ -96,7 +98,7 @@ impl<C: Comparator, A: ArenaTrait> SkipList<C, A> {
     pub fn new(c: C, mut arena: A) -> Self {
         let head = Node::new(Bytes::new(), 0, arena.borrow_mut());
         SkipList {
-            max_height: AtomicUsize::new(0),
+            max_height: AtomicUsize::new(1),
             head,
             arena,
             compare: c,
@@ -215,6 +217,9 @@ impl<C: Comparator, A: ArenaTrait> SkipList<C, A> {
         rst
     }
 
+    pub fn size(&self) -> usize {
+        self.size.load(Ordering::Acquire)
+    }
     fn find_last(&self) -> *const Node {
         let mut level = self.max_height.load(Ordering::Acquire);
         let mut node = self.head;
@@ -274,6 +279,7 @@ impl<C: Comparator, A: ArenaTrait> LevedbIterator for SkipListIterator<C, A> {
     fn value(&self) -> &[u8] {
         unimplemented!()
     }
+
     fn status(&mut self) -> Result<(), std::fmt::Error> {
         Ok(())
     }
@@ -281,49 +287,102 @@ impl<C: Comparator, A: ArenaTrait> LevedbIterator for SkipListIterator<C, A> {
 
 #[cfg(test)]
 mod tests {
-    use super::{random_height, Bytes, Node, Ordering, SkipList, MAX_HEIGHT};
+    use super::{random_height, Bytes, Node, Ordering, SkipList, SkipListIterator, MAX_HEIGHT};
+    use crate::db::comparator::BytewiseComparator;
     use crate::util::arena::BlockArena;
-    // fn new_test_skl() -> SkipList<BytewiseComparator, BlockArena> {
-    //     SkipList::new(BytewiseComparator::default(), BlockArena::default())
-    // }
+    use std::ptr;
+    fn new_test_skl() -> SkipList<BytewiseComparator, BlockArena> {
+        SkipList::new(BytewiseComparator::default(), BlockArena::default())
+    }
 
-    // fn construct_skl_from_nodes(
-    //     nodes: Vec<(&str, usize)>,
-    // ) -> SkipList<BytewiseComparator, BlockArena> {
-    //     if nodes.is_empty() {
-    //         return new_test_skl();
-    //     }
-    //     let mut skl = new_test_skl();
-    //     // just use MAX_HEIGHT as capacity because it's the largest value that node.height can have
-    //     let mut prev_nodes = vec![skl.head; MAX_HEIGHT];
-    //     let mut max_height = 1;
-    //     for (key, height) in nodes {
-    //         let n = Node::new(
-    //             Bytes::copy_from_slice(key.as_bytes()),
-    //             height,
-    //             &mut skl.arena,
-    //         );
-    //         for (h, prev_node) in prev_nodes[0..height].iter().enumerate() {
-    //             unsafe {
-    //                 (**prev_node).set_next(h + 1, n as *mut Node);
-    //             }
-    //         }
-    //         for i in 0..height {
-    //             prev_nodes[i] = n;
-    //         }
-    //         if height > max_height {
-    //             max_height = height;
-    //         }
-    //     }
-    //     // must update max_height
-    //     skl.max_height.store(max_height, Ordering::Release);
-    //     skl
-    // }
+    fn construct_skl_from_nodes(
+        nodes: Vec<(&str, usize)>,
+    ) -> SkipList<BytewiseComparator, BlockArena> {
+        if nodes.is_empty() {
+            return new_test_skl();
+        }
+        let mut skl = new_test_skl();
+        // just use MAX_HEIGHT as capacity because it's the largest value that node.height can have
+        let mut prev_nodes = vec![skl.head; MAX_HEIGHT];
+        let mut max_height = 1;
+        for (key, height) in nodes {
+            let n = Node::new(
+                Bytes::copy_from_slice(key.as_bytes()),
+                height,
+                &mut skl.arena,
+            );
+            for (h, prev_node) in prev_nodes[0..height].iter().enumerate() {
+                unsafe {
+                    (**prev_node).set_next(h + 1, n as *mut Node);
+                }
+            }
+            for i in 0..height {
+                prev_nodes[i] = n;
+            }
+            if height > max_height {
+                max_height = height;
+            }
+        }
+        // must update max_height
+        skl.max_height.store(max_height, Ordering::Release);
+        skl
+    }
     #[test]
     fn test_rand_height() {
         for _ in 0..100 {
             let height = random_height();
             assert_eq!(height < MAX_HEIGHT, true);
+        }
+    }
+    // #[test]
+    // fn test_key_is_less_than_or_equal() {
+    //     let skl = new_test_skl();
+    //     let key = vec![1u8, 2u8, 3u8];
+
+    //     let tests = vec![
+    //         (vec![1u8, 2u8], false),
+    //         (vec![1u8, 2u8, 4u8], true),
+    //         (vec![1u8, 2u8, 3u8], true),
+    //     ];
+    //     // nullptr should be considered as the largest
+    //     assert_eq!(true, skl.key_is_less_than_or_equal(&key, ptr::null_mut()));
+
+    //     for (node_key, expected) in tests {
+    //         let node = Node::new(Bytes::from(node_key), 1, &skl.arena);
+    //         assert_eq!(expected, skl.key_is_less_than_or_equal(&key, node))
+    //     }
+    // }
+    #[test]
+    fn test_find_greater_or_equal() {
+        let inputs = vec![
+            ("key1", 5),
+            ("key3", 1),
+            ("key5", 2),
+            ("key7", 4),
+            ("key9", 3),
+        ];
+        let skl = construct_skl_from_nodes(inputs);
+        let mut prev_nodes = vec![ptr::null(); 5];
+        // test the scenario for un-inserted key
+        let res = skl.find_greater_or_equal("key4".as_bytes(), Some(&mut prev_nodes));
+        unsafe {
+            assert_eq!((*res).key(), "key5".as_bytes());
+            // prev_nodes should be correct
+            assert_eq!((*(prev_nodes[0])).key(), "key3".as_bytes());
+            for node in prev_nodes[1..5].iter() {
+                assert_eq!((**node).key(), "key1".as_bytes());
+            }
+        }
+        prev_nodes = vec![ptr::null(); 5];
+        // test the scenario for inserted key
+        let res2 = skl.find_greater_or_equal("key5".as_bytes(), Some(&mut prev_nodes));
+        unsafe {
+            assert_eq!((*res2).key(), "key5".as_bytes());
+            // prev_nodes should be correct
+            assert_eq!((*(prev_nodes[0])).key(), "key3".as_bytes());
+            for node in prev_nodes[1..5].iter() {
+                assert_eq!((**node).key(), "key1".as_bytes());
+            }
         }
     }
 }
