@@ -1,6 +1,5 @@
 //unthread-safe-edtion
 //d
-
 // use super::ldbslice::{self, Slice};
 use crate::util::arena::ArenaTrait;
 use bytes::Bytes;
@@ -51,7 +50,7 @@ impl Node {
     fn next(&self, height: usize) -> *mut Node {
         unsafe {
             self.next_nodes
-                .get_unchecked(height)
+                .get_unchecked(height - 1)
                 .load(Ordering::Acquire)
         }
     }
@@ -60,7 +59,7 @@ impl Node {
         unsafe {
             // self.next_nodes[height].store(node, Ordering::Release);
             self.next_nodes
-                .get_unchecked(height)
+                .get_unchecked(height - 1)
                 .store(node, Ordering::Release);
         }
     }
@@ -96,7 +95,7 @@ pub struct SkipList<C: Comparator, A: ArenaTrait> {
 }
 impl<C: Comparator, A: ArenaTrait> SkipList<C, A> {
     pub fn new(c: C, mut arena: A) -> Self {
-        let head = Node::new(Bytes::new(), 0, arena.borrow_mut());
+        let head = Node::new(Bytes::new(), MAX_HEIGHT, arena.borrow_mut());
         SkipList {
             max_height: AtomicUsize::new(1),
             head,
@@ -114,22 +113,22 @@ impl<C: Comparator, A: ArenaTrait> SkipList<C, A> {
     // node at "level" for every level in [0..max_height_-1].
 
     fn find_greater_or_equal(&self, key: &[u8], mut prev: Option<&mut [*const Node]>) -> *mut Node {
-        let mut level = self.max_height.load(Ordering::Acquire) - 1;
+        let mut level = self.max_height.load(Ordering::Acquire);
         let mut node = self.head;
         loop {
             unsafe {
                 let next = (*node).next(level);
-                if self.key_is_after_node(key, next) {
-                    node = next;
-                } else {
+                if self.key_is_less_than_or_equal(key, next) {
                     if let Some(ref mut p) = prev {
-                        p[level] = node;
+                        p[level - 1] = node;
                     }
-                    if level == 0 {
+                    if level == 1 {
                         return next;
                     } else {
                         level -= 1;
                     }
+                } else {
+                    node = next;
                 }
             }
         }
@@ -151,10 +150,10 @@ impl<C: Comparator, A: ArenaTrait> SkipList<C, A> {
             )
         }
         let new_height = random_height();
-        let cur_maxheight = self.max_height.load(Ordering::Acquire);
-        if new_height > cur_maxheight {
-            for i in 0..cur_maxheight {
-                prev[i] = self.head;
+        let cur_max_height = self.max_height.load(Ordering::Acquire);
+        if new_height > cur_max_height {
+            for p in prev.iter_mut().take(new_height).skip(cur_max_height) {
+                *p = self.head;
             }
             // It is ok to mutate max_height_ without any synchronization
             // with concurrent readers.  A concurrent reader that observes
@@ -167,10 +166,10 @@ impl<C: Comparator, A: ArenaTrait> SkipList<C, A> {
         }
 
         let new_node = Node::new(key, new_height, &mut self.arena) as *mut Node;
-        for i in 0..new_height {
+        for i in 1..new_height {
             unsafe {
-                (*new_node).no_barrier_set_next(i, (*prev[i]).next(i));
-                (*prev[i]).set_next(i, new_node as *mut Node);
+                (*new_node).no_barrier_set_next(i, (*prev[i - 1]).next(i));
+                (*prev[i - 1]).set_next(i, new_node as *mut Node);
             }
         }
         self.count.fetch_add(1, Ordering::SeqCst);
@@ -232,14 +231,37 @@ impl<C: Comparator, A: ArenaTrait> SkipList<C, A> {
             }
         }
     }
-    // fn key_is_less_than_or_equal(&self, key: &[u8], n: *const Node) -> bool {
-    //     true
-    // }
+    fn key_is_less_than_or_equal(&self, key: &[u8], node: *const Node) -> bool {
+        if node.is_null() {
+            true
+        } else {
+            let node_key = unsafe { (*node).key() };
+            !matches!(
+                self.compare.compare(key, node_key),
+                std::cmp::Ordering::Greater
+            )
+        }
+    }
 }
 
 pub struct SkipListIterator<C: Comparator, A: ArenaTrait> {
     skl: Arc<SkipList<C, A>>,
     node: *const Node,
+}
+impl<C: Comparator, A: ArenaTrait> SkipListIterator<C, A> {
+    pub fn new(skl: Arc<SkipList<C, A>>) -> Self {
+        Self {
+            skl,
+            node: ptr::null_mut(),
+        }
+    }
+
+    // If the head is nullptr, this method will panic. Otherwise return true.
+    #[inline]
+    fn panic_valid(&self) -> bool {
+        assert!(self.valid(), "[skl] invalid iterator head",);
+        true
+    }
 }
 
 impl<C: Comparator, A: ArenaTrait> LevedbIterator for SkipListIterator<C, A> {
@@ -290,6 +312,7 @@ mod tests {
     use super::{random_height, Bytes, Node, Ordering, SkipList, SkipListIterator, MAX_HEIGHT};
     use crate::db::comparator::BytewiseComparator;
     use crate::util::arena::BlockArena;
+    use std::borrow::BorrowMut;
     use std::ptr;
     fn new_test_skl() -> SkipList<BytewiseComparator, BlockArena> {
         SkipList::new(BytewiseComparator::default(), BlockArena::default())
@@ -298,6 +321,7 @@ mod tests {
     fn construct_skl_from_nodes(
         nodes: Vec<(&str, usize)>,
     ) -> SkipList<BytewiseComparator, BlockArena> {
+        println!("2");
         if nodes.is_empty() {
             return new_test_skl();
         }
@@ -334,26 +358,27 @@ mod tests {
             assert_eq!(height < MAX_HEIGHT, true);
         }
     }
-    // #[test]
-    // fn test_key_is_less_than_or_equal() {
-    //     let skl = new_test_skl();
-    //     let key = vec![1u8, 2u8, 3u8];
+    #[test]
+    fn test_key_is_less_than_or_equal() {
+        let mut skl = new_test_skl();
+        let key = vec![1u8, 2u8, 3u8];
 
-    //     let tests = vec![
-    //         (vec![1u8, 2u8], false),
-    //         (vec![1u8, 2u8, 4u8], true),
-    //         (vec![1u8, 2u8, 3u8], true),
-    //     ];
-    //     // nullptr should be considered as the largest
-    //     assert_eq!(true, skl.key_is_less_than_or_equal(&key, ptr::null_mut()));
+        let tests = vec![
+            (vec![1u8, 2u8], false),
+            (vec![1u8, 2u8, 4u8], true),
+            (vec![1u8, 2u8, 3u8], true),
+        ];
+        // nullptr should be considered as the largest
+        assert_eq!(true, skl.key_is_less_than_or_equal(&key, ptr::null_mut()));
 
-    //     for (node_key, expected) in tests {
-    //         let node = Node::new(Bytes::from(node_key), 1, &skl.arena);
-    //         assert_eq!(expected, skl.key_is_less_than_or_equal(&key, node))
-    //     }
-    // }
+        for (node_key, expected) in tests {
+            let node = Node::new(Bytes::from(node_key), 1, &mut skl.arena);
+            assert_eq!(expected, skl.key_is_less_than_or_equal(&key, node))
+        }
+    }
     #[test]
     fn test_find_greater_or_equal() {
+        println!("1");
         let inputs = vec![
             ("key1", 5),
             ("key3", 1),
@@ -361,6 +386,7 @@ mod tests {
             ("key7", 4),
             ("key9", 3),
         ];
+
         let skl = construct_skl_from_nodes(inputs);
         let mut prev_nodes = vec![ptr::null(); 5];
         // test the scenario for un-inserted key
