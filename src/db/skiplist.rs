@@ -17,7 +17,7 @@ use super::iterator::LevedbIterator;
 pub const MAX_HEIGHT: usize = 12;
 use bytes::Bytes as Slice;
 fn random_height() -> usize {
-    rand::thread_rng().gen_range(0, MAX_HEIGHT)
+    rand::thread_rng().gen_range(1, MAX_HEIGHT)
 }
 
 #[derive(Debug)]
@@ -66,11 +66,17 @@ impl Node {
 
     fn no_barrier_next(&self, height: usize) -> *mut Node {
         assert!(height > 0);
-        self.next_nodes[height].load(Ordering::Relaxed)
+        unsafe {
+            self.next_nodes
+                .get_unchecked(height - 1)
+                .load(Ordering::Relaxed)
+        }
     }
     fn no_barrier_set_next(&self, height: usize, node: *mut Node) {
         unsafe {
-            self.next_nodes[height].store(node, Ordering::Relaxed);
+            self.next_nodes
+                .get_unchecked(height - 1)
+                .store(node, Ordering::Relaxed);
         }
     }
     fn key(&self) -> &[u8] {
@@ -118,7 +124,9 @@ impl<C: Comparator, A: ArenaTrait> SkipList<C, A> {
         loop {
             unsafe {
                 let next = (*node).next(level);
-                if self.key_is_less_than_or_equal(key, next) {
+                if self.key_is_after_node(key, next) {
+                    node = next;
+                } else {
                     if let Some(ref mut p) = prev {
                         p[level - 1] = node;
                     }
@@ -127,9 +135,19 @@ impl<C: Comparator, A: ArenaTrait> SkipList<C, A> {
                     } else {
                         level -= 1;
                     }
-                } else {
-                    node = next;
                 }
+                // if self.key_is_less_than_or_equal(key, next) {
+                //     if let Some(ref mut p) = prev {
+                //         p[level - 1] = node;
+                //     }
+                //     if level == 1 {
+                //         return next;
+                //     } else {
+                //         level -= 1;
+                //     }
+                // } else {
+                //     node = next;
+                // }
             }
         }
     }
@@ -166,7 +184,7 @@ impl<C: Comparator, A: ArenaTrait> SkipList<C, A> {
         }
 
         let new_node = Node::new(key, new_height, &mut self.arena) as *mut Node;
-        for i in 1..new_height {
+        for i in 1..=new_height {
             unsafe {
                 (*new_node).no_barrier_set_next(i, (*prev[i - 1]).next(i));
                 (*prev[i - 1]).set_next(i, new_node as *mut Node);
@@ -189,7 +207,7 @@ impl<C: Comparator, A: ArenaTrait> SkipList<C, A> {
                 match (
                     next.is_null()
                         || self.compare.compare((*next).key(), key) != std::cmp::Ordering::Less,
-                    level == 0,
+                    level == 1,
                 ) {
                     (true, true) => return node,
                     (true, false) => level -= 1,
@@ -203,7 +221,7 @@ impl<C: Comparator, A: ArenaTrait> SkipList<C, A> {
     fn key_is_after_node(&self, key: &[u8], node: *mut Node) -> bool {
         unsafe {
             !node.is_null()
-                && self.compare.compare(key.as_ref(), (*node).key()) == std::cmp::Ordering::Less
+                && self.compare.compare((*node).key(), key.as_ref()) == std::cmp::Ordering::Less
         }
     }
     fn contains(&self, key: &[u8]) -> bool {
@@ -224,7 +242,7 @@ impl<C: Comparator, A: ArenaTrait> SkipList<C, A> {
         let mut node = self.head;
         loop {
             let next = unsafe { (*node).next(level) };
-            match (next.is_null(), level == 0) {
+            match (next.is_null(), level == 1) {
                 (true, true) => return node,
                 (true, false) => level -= 1,
                 _ => node = next,
@@ -276,12 +294,17 @@ impl<C: Comparator, A: ArenaTrait> LevedbIterator for SkipListIterator<C, A> {
     #[inline]
     fn next(&mut self) {
         unsafe {
-            self.node = (*(self.node)).next(0);
+            self.node = (*(self.node)).next(1);
         }
     }
     #[inline]
     fn seek_to_first(&mut self) {
-        self.node = unsafe { (*self.skl.head).next_nodes[0].load(Ordering::Acquire) };
+        self.node = unsafe {
+            (*(self.skl.head))
+                .next_nodes
+                .get_unchecked(0)
+                .load(Ordering::Acquire)
+        };
     }
     #[inline]
     fn seek_to_last(&mut self) {
@@ -289,9 +312,14 @@ impl<C: Comparator, A: ArenaTrait> LevedbIterator for SkipListIterator<C, A> {
     }
     #[inline]
     fn prev(&mut self) {
-        assert!(self.valid());
-        self.node = self.skl.find_less_than(self.key());
-        if self.node.eq(&self.skl.head) {
+        // self.panic_valid();
+        let key = self.key();
+        println!("key :{:?}", std::str::from_utf8(key));
+        self.node = self.skl.find_less_than(key);
+        unsafe {
+            println!("{:?}", (*self.node).key());
+        }
+        if self.node == self.skl.head {
             self.node = ptr::null_mut();
         }
     }
@@ -311,9 +339,11 @@ impl<C: Comparator, A: ArenaTrait> LevedbIterator for SkipListIterator<C, A> {
 mod tests {
     use super::{random_height, Bytes, Node, Ordering, SkipList, SkipListIterator, MAX_HEIGHT};
     use crate::db::comparator::BytewiseComparator;
+    use crate::db::iterator::LevedbIterator;
     use crate::util::arena::BlockArena;
     use std::borrow::BorrowMut;
     use std::ptr;
+    use std::sync::Arc;
     fn new_test_skl() -> SkipList<BytewiseComparator, BlockArena> {
         SkipList::new(BytewiseComparator::default(), BlockArena::default())
     }
@@ -321,7 +351,6 @@ mod tests {
     fn construct_skl_from_nodes(
         nodes: Vec<(&str, usize)>,
     ) -> SkipList<BytewiseComparator, BlockArena> {
-        println!("2");
         if nodes.is_empty() {
             return new_test_skl();
         }
@@ -376,9 +405,17 @@ mod tests {
             assert_eq!(expected, skl.key_is_less_than_or_equal(&key, node))
         }
     }
+
+    #[test]
+    fn test_key_is_after_node() {
+        let key: Bytes = Bytes::from("key2");
+        let mut a = BlockArena::default();
+        let skl = new_test_skl();
+        let node1 = Node::new(Bytes::from("key1"), 12, &mut a) as *mut Node;
+        assert_eq!(skl.key_is_after_node(&key, node1), true);
+    }
     #[test]
     fn test_find_greater_or_equal() {
-        println!("1");
         let inputs = vec![
             ("key1", 5),
             ("key3", 1),
@@ -410,5 +447,124 @@ mod tests {
                 assert_eq!((**node).key(), "key1".as_bytes());
             }
         }
+    }
+    #[test]
+    fn test_contains() {
+        let inputs = vec![
+            ("key1", 5),
+            ("key3", 1),
+            ("key5", 2),
+            ("key7", 4),
+            ("key9", 3),
+        ];
+        let key1 = Bytes::from("key1");
+        let key2 = Bytes::from("key4");
+        let key3 = Bytes::from("keys");
+        let skl = construct_skl_from_nodes(inputs);
+        assert!(skl.contains(&key1));
+        assert!(!skl.contains(&key2));
+        assert!(!skl.contains(&key3));
+    }
+
+    #[test]
+    fn test_find_last() {
+        let inputs = vec![
+            ("key1", 5),
+            ("key3", 1),
+            ("key5", 2),
+            ("key7", 4),
+            ("key9", 3),
+        ];
+        let skl = construct_skl_from_nodes(inputs);
+        let node = skl.find_last();
+        println!("{:?}", *&node);
+        unsafe {
+            println!("{:?}", (*node).key().to_vec());
+            assert_eq!(&Bytes::from("key9").to_vec(), (*node).key())
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_duplicate_insert_should_panic() {
+        let inputs = vec!["key1", "key1"];
+        let mut skl = new_test_skl();
+        for key in inputs {
+            skl.insert(key.as_bytes());
+        }
+    }
+    #[test]
+    fn test_empty_skiplist_iterator() {
+        let skl = new_test_skl();
+        let iter = SkipListIterator::new(Arc::new(skl));
+        assert!(!iter.valid());
+    }
+    #[test]
+    fn test_insert() {
+        let inputs = vec!["key1", "key3", "key5", "key7", "key9"];
+        let mut skl = new_test_skl();
+        for key in inputs.clone() {
+            skl.insert(key.as_bytes());
+        }
+
+        let mut node = skl.head;
+        for input_key in inputs {
+            unsafe {
+                let next = (*node).next(1);
+                let key = (*next).key();
+                assert_eq!(key, input_key.as_bytes());
+                node = next;
+            }
+        }
+        unsafe {
+            // should be the last node
+            assert_eq!((*node).next(1), ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn test_skiplist_basic() {
+        use std::str;
+        let mut skl = new_test_skl();
+        let inputs = vec!["key1", "key11", "key13", "key3", "key5", "key7", "key9"];
+        for key in inputs.clone() {
+            skl.insert(key.as_bytes())
+        }
+        let mut iter = SkipListIterator::new(Arc::new(skl));
+        assert_eq!(ptr::null(), iter.node);
+
+        iter.seek_to_first();
+        assert_eq!("key1", std::str::from_utf8(iter.key()).unwrap());
+        for key in inputs.clone() {
+            if !iter.valid() {
+                break;
+            }
+            assert_eq!(key, std::str::from_utf8(iter.key()).unwrap());
+            iter.next();
+        }
+        assert!(!iter.valid());
+
+        iter.seek_to_first();
+        iter.next();
+        iter.prev();
+        assert_eq!(inputs[0], str::from_utf8(iter.key()).unwrap());
+        iter.seek_to_first();
+        iter.seek_to_last();
+        for key in inputs.into_iter().rev() {
+            if !iter.valid() {
+                break;
+            }
+            assert_eq!(key, str::from_utf8(iter.key()).unwrap());
+            iter.prev();
+        }
+        assert!(!iter.valid());
+        iter.seek("key7".as_bytes());
+        assert_eq!("key7", str::from_utf8(iter.key()).unwrap());
+        iter.seek("key4".as_bytes());
+        assert_eq!("key5", str::from_utf8(iter.key()).unwrap());
+        iter.seek("".as_bytes());
+        assert_eq!("key1", str::from_utf8(iter.key()).unwrap());
+        iter.seek("llllllllllllllll".as_bytes());
+        assert!(!iter.valid());
     }
 }
