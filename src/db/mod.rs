@@ -1,5 +1,5 @@
-mod comparator;
 // mod dbformat;
+mod format;
 mod iterator;
 mod ldbiterator;
 mod ldbslice;

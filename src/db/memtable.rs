@@ -1,6 +1,6 @@
-use crate::db::comparator::Comparator;
 use crate::db::skiplist::SkipList;
 use crate::util::arena::ArenaTrait;
+use crate::util::comparator::Comparator;
 struct memtable<C: Comparator, A: ArenaTrait> {
     key_comparator: C,
     arena: A,

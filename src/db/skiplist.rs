@@ -11,8 +11,8 @@ use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use super::comparator::Comparator;
 use super::iterator::LevedbIterator;
+use crate::util::comparator::Comparator;
 
 pub const MAX_HEIGHT: usize = 12;
 use bytes::Bytes as Slice;
@@ -338,9 +338,9 @@ impl<C: Comparator, A: ArenaTrait> LevedbIterator for SkipListIterator<C, A> {
 #[cfg(test)]
 mod tests {
     use super::{random_height, Bytes, Node, Ordering, SkipList, SkipListIterator, MAX_HEIGHT};
-    use crate::db::comparator::BytewiseComparator;
     use crate::db::iterator::LevedbIterator;
     use crate::util::arena::BlockArena;
+    use crate::util::comparator::BytewiseComparator;
     use std::borrow::BorrowMut;
     use std::ptr;
     use std::sync::Arc;

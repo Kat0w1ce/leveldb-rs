@@ -8,12 +8,12 @@ pub trait Comparator {
 
     fn name() -> String;
 
-    // If *start < limit, changes *start to a short string in [start,limit).
+    // If start < limit, return a string in [start,limit).
     // Simple comparator implementations may return with *start unchanged,
     // i.e., an implementation of this method that does nothing is correct.
     fn find_shortest_separator(&self, start: &[u8], other: &[u8]) -> Vec<u8>;
 
-    // Changes *key to a short string >= *key.
+    // return  a short string which  >= *key.
     // Simple comparator implementations may return with *key unchanged,
     // i.e., an implementation of this method that does nothing is correct.
     fn find_short_successor(&self, key: &[u8]) -> Vec<u8>;
