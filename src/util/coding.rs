@@ -1,5 +1,33 @@
 use integer_encoding::{self, FixedInt, VarInt};
 
+pub fn get_varint_32_prefix_ptr(p: usize, limit: usize, key: &[u8]) -> Option<(u32, usize)> {
+    if key.len() == 0 {
+        return None;
+    }
+    for (i, &b) in key.iter().enumerate() {
+        if b < 128u8 {
+            return u32::decode_var(&key[..i]);
+        }
+    }
+    None
+}
+
+pub fn get_varint_32_prefix_slice(p: usize, limit: usize, key: &[u8]) -> Option<&[u8]> {
+    match get_varint_32_prefix_ptr(p, limit, key) {
+        Some((len, n)) => {
+            let read_len = len as usize + n;
+            if read_len > key.len() {
+                return None;
+            }
+        }
+        None => return None,
+    };
+
+    None
+}
+// fn get_varint_32_ptr_fallback(p: usize, limit: usize, key: &[u8]) -> Option<usize> {
+//     None
+// }
 pub fn put_fixed_64(dst: &mut Vec<u8>, value: u64) {
     dst.extend_from_slice(value.encode_fixed_light())
 }
@@ -28,9 +56,10 @@ pub fn put_varint_64(dst: &mut Vec<u8>, value: u64) {
     dst.append(&mut value.encode_var_vec());
 }
 
-pub fn varint_length(mut value: u64) -> usize {
+pub fn varint_length(value: usize) -> usize {
     let mut len = 1;
 
+    let mut value = value;
     while (value >= 128) {
         value >>= 7;
         len += 1;

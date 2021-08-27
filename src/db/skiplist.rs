@@ -6,6 +6,7 @@ use bytes::Bytes;
 use rand::Rng;
 use std::borrow::BorrowMut;
 
+use std::cell::RefCell;
 use std::mem::{self, replace, size_of};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
@@ -154,7 +155,7 @@ impl<C: Comparator, A: ArenaTrait> SkipList<C, A> {
 
     // Insert key into the list.
     // REQUIRES: nothing that compares equal to key is currently in the list.
-    fn insert(&mut self, key: impl Into<Bytes>) {
+    pub fn insert(&mut self, key: impl Into<Bytes>) {
         let key = key.into();
         let len = key.len();
         let mut prev = [ptr::null(); MAX_HEIGHT];

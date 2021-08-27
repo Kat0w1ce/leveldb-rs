@@ -1,5 +1,5 @@
 use crate::util::{
-    coding::{self, put_fixed_64},
+    coding::{self, put_fixed_64, put_varint_32},
     comparator::{self, Comparator},
 };
 use integer_encoding::{self, FixedInt};
@@ -7,6 +7,8 @@ use std::{
     error::Error,
     fmt::{Debug, Formatter},
 };
+
+use super::SequenceNumber;
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ValueType {
     KTypeDeletion = 0,
@@ -21,7 +23,7 @@ impl From<u8> for ValueType {
     }
 }
 pub const VALUE_TYPE_FOR_SEEK: ValueType = ValueType::KTypeValue;
-pub type SequenceNumber = u64;
+
 pub const K_MAX_SEQUENCE_NUMBER: u64 = 1u64 << 56;
 
 fn pack_sequence_and_type(seq: u64, value_type: ValueType) -> u64 {
@@ -244,8 +246,39 @@ impl<C: Comparator> Comparator for InternalKeyComparator<C> {
     }
 }
 
-#[cfg(test)]
+// We construct a char array of the form:
+//    klength  varint32               <-- start_
+//    userkey  char[klength]          <-- kstart_
+//    tag      uint64
+//                                    <-- end_
+// The array is a suitable MemTable key.
+// The suffix starting with "userkey" can be used as an InternalKey.
+pub struct LookUpKey {
+    space: Vec<u8>,
+    kstart: usize,
+}
 
+impl LookUpKey {
+    pub fn memtable_key(&self) -> &[u8] {
+        &self.space
+    }
+    pub fn internal_key(&self) -> &[u8] {
+        &self.space[self.kstart..]
+    }
+    pub fn user_key(&self) -> &[u8] {
+        &self.space[self.kstart..self.space.len() - 8]
+    }
+    pub fn New(user_key: &[u8], s: SequenceNumber) -> LookUpKey {
+        let mut space = vec![];
+
+        put_varint_32(&mut space, user_key.len() as u32 + 8);
+        let kstart = space.len();
+        space.extend_from_slice(user_key);
+        put_fixed_64(&mut space, pack_sequence_and_type(s, ValueType::KTypeValue));
+        LookUpKey { space, kstart }
+    }
+}
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::util::coding::*;
