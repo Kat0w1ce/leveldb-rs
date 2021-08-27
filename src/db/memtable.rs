@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use crate::db::skiplist::SkipList;
 use crate::util::arena::{self, ArenaTrait, BlockArena};
-use crate::util::coding::{get_varint_32, put_fixed_64, put_varint_32, varint_length};
+use crate::util::coding::{
+    get_varint_32, get_varint_32_prefix_ptr, put_fixed_64, put_varint_32, varint_length,
+};
 use crate::util::comparator::Comparator;
 
 use super::format::{InternalKey, LookUpKey, ValueType};
@@ -21,6 +23,7 @@ struct MemTable<C: Comparator> {
 impl<C: Comparator + Clone> MemTable<C> {
     pub fn new(c: C) -> Self {
         let a = arena::BlockArena::default();
+        // let table = Arc::new(SkipList::new(c.clone(), a));
         let table = Arc::new(SkipList::new(c.clone(), a));
         Self {
             key_comparator: c,
@@ -41,7 +44,7 @@ impl<C: Comparator + Clone> MemTable<C> {
     }
 
     pub fn approximate_memory_usage(&self) -> usize {
-        self.table.as_ref().borrow().size()
+        self.table.size()
     }
 
     pub fn add(&mut self, s: SequenceNumber, valueType: ValueType, key: &[u8], value: &[u8]) {
@@ -67,13 +70,15 @@ impl<C: Comparator + Clone> MemTable<C> {
         //put value
         put_varint_32(&mut buf, val_size as u32);
         buf.extend_from_slice(value);
-        // let a = self.table.as_ref();
-        self.table.insert(buf);
+
+        //addtional lock needed
+        //dead lock?
+        Arc::get_mut(&mut self.table).unwrap().insert(buf);
     }
 
     pub fn get(&self, key: &LookUpKey) {
         let mem_key = key.memtable_key();
-        let mut iter = SkipListIterator::new(Arc::clone(&self.table));
+        let mut iter = SkipListIterator::new(self.table.clone());
         iter.seek(mem_key);
         if iter.valid() {
             // entry format is:
@@ -86,8 +91,15 @@ impl<C: Comparator + Clone> MemTable<C> {
             // sequence number since the Seek() call above should have skipped
             // all entries with overly large sequence numbers.
             let entry = iter.key();
-            let key_len = get_varint_32(&entry[..5]);
+            let s = get_varint_32_prefix_ptr(0, 5, mem_key);
         }
         // None
     }
+}
+
+#[cfg(test)]
+
+mod test {
+    #[test]
+    fn concurrent_test() {}
 }
