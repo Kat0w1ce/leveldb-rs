@@ -5,28 +5,27 @@ use std::sync::Arc;
 
 use crate::db::skiplist::SkipList;
 use crate::util::arena::{self, ArenaTrait, BlockArena};
-use crate::util::coding::{
-    get_varint_32, get_varint_32_prefix_ptr, put_fixed_64, put_varint_32, varint_length,
-};
+use crate::util::coding::*;
 use crate::util::comparator::Comparator;
 
-use super::format::{InternalKey, LookUpKey, ValueType};
+use super::format::{InternalKey, InternalKeyComparator, LookUpKey, ValueType};
 use super::iterator::LevedbIterator;
 use super::skiplist::SkipListIterator;
 use super::SequenceNumber;
 struct MemTable<C: Comparator> {
-    key_comparator: C,
+    key_comparator: InternalKeyComparator<C>,
     refs: usize,
     table: Arc<SkipList<C, BlockArena>>,
 }
 
 impl<C: Comparator + Clone> MemTable<C> {
     pub fn new(c: C) -> Self {
+        let ic = InternalKeyComparator::new(c.clone());
         let a = arena::BlockArena::default();
         // let table = Arc::new(SkipList::new(c.clone(), a));
         let table = Arc::new(SkipList::new(c.clone(), a));
         Self {
-            key_comparator: c,
+            key_comparator: ic,
             refs: 0,
             table,
         }
@@ -47,54 +46,74 @@ impl<C: Comparator + Clone> MemTable<C> {
         self.table.size()
     }
 
-    pub fn add(&mut self, s: SequenceNumber, valueType: ValueType, key: &[u8], value: &[u8]) {
-        // todo: use arena to allocate memory
-        // Format of an entry is concatenation of:
-        //  key_size     : varint32 of internal_key.size()
-        //  key bytes    : char[internal_key.size()]
-        //  value_size   : varint32 of value.size()
-        //  value bytes  : char[value.size()]
-        let key_size = key.len();
-        let val_size = value.len();
-        let internal_key_size = key_size + 8;
-        let encoded_len = varint_length(internal_key_size)
-            + internal_key_size
-            + varint_length(val_size)
-            + val_size;
-        let mut buf = vec![];
-        put_varint_32(&mut buf, key_size as u32);
-        // put InternalKey
-        buf.extend_from_slice(key);
-        put_fixed_64(&mut buf, (s << 8) | valueType as u64);
+    // pub fn add(&mut self, s: SequenceNumber, valueType: ValueType, key: &[u8], value: &[u8]) {
+    //     // todo: use arena to allocate memory
+    //     // Format of an entry is concatenation of:
+    //     //  key_size     : varint32 of internal_key.size()
+    //     //  key bytes    : char[internal_key.size()]
+    //     //  value_size   : varint32 of value.size()
+    //     //  value bytes  : char[value.size()]
+    //     let key_size = key.len();
+    //     let val_size = value.len();
+    //     let internal_key_size = key_size + 8;
+    //     let encoded_len = varint_length(internal_key_size)
+    //         + internal_key_size
+    //         + varint_length(val_size)
+    //         + val_size;
+    //     let mut buf = vec![];
+    //     put_varint_32(&mut buf, key_size as u32);
+    //     // put InternalKey
+    //     buf.extend_from_slice(key);
+    //     put_fixed_64(&mut buf, (s << 8) | valueType as u64);
 
-        //put value
-        put_varint_32(&mut buf, val_size as u32);
-        buf.extend_from_slice(value);
+    //     //put value
+    //     put_varint_32(&mut buf, val_size as u32);
+    //     buf.extend_from_slice(value);
 
-        //addtional lock needed
-        //dead lock?
-        Arc::get_mut(&mut self.table).unwrap().insert(buf);
-    }
+    //     //addtional lock needed
+    //     //dead lock?
+    //     Arc::get_mut(&mut self.table).unwrap().insert(buf);
+    // }
 
-    pub fn get(&self, key: &LookUpKey) {
-        let mem_key = key.memtable_key();
-        let mut iter = SkipListIterator::new(self.table.clone());
-        iter.seek(mem_key);
-        if iter.valid() {
-            // entry format is:
-            //    klength  varint32&
-            //    userkey  char[klength]
-            //    tag      uint64
-            //    vlength  varint32
-            //    value    char[vlength]
-            // Check that it belongs to same user key.  We do not check the
-            // sequence number since the Seek() call above should have skipped
-            // all entries with overly large sequence numbers.
-            let entry = iter.key();
-            let s = get_varint_32_prefix_ptr(0, 5, mem_key);
-        }
-        // None
-    }
+    // pub fn get(&self, key: &LookUpKey) -> Option<Result<Vec<u8>>> {
+    //     let mem_key = key.memtable_key();
+    //     let mut iter = SkipListIterator::new(self.table.clone());
+    //     iter.seek(mem_key);
+    //     if iter.valid() {
+    //         // entry format is:
+    //         //    klength  varint32&
+    //         //    userkey  char[klength]
+    //         //    tag      uint64
+    //         //    vlength  varint32
+    //         //    value    char[vlength]
+    //         // Check that it belongs to same user key.  We do not check the
+    //         // sequence number since the Seek() call above should have skipped
+    //         // all entries with overly large sequence numbers.
+    //         let entry = iter.key();
+    //         let (klen, size) = get_varint_32_prefix_ptr(0, 5, entry).unwrap();
+    //         let user_key = &entry[size + 1..size + klen as usize - 8];
+    //         let val = &mem_key[size + klen..];
+    //         match self.key_comparator.compare(user_key, key.user_key()) {
+    //             std::cmp::Ordering::Less => None,
+    //             std::cmp::Ordering::Equal => {
+    //                 let tag = decode_fixed_64(&mem_key[size + user_key.len()..]);
+    //                 match ValueType::From(tag as u8) {
+    //                     ValueType::KTypeValue => {
+    //                         return Some(Ok(get_varint_32_encoded_slice(
+    //                             size + klen,
+    //                             entry.len(),
+    //                             &val,
+    //                         )
+    //                         .to_vec()))
+    //                     }
+    //                     ValueType::KTypeDeletion => todo!(),
+    //                 }
+    //             }
+    //             std::cmp::Ordering::Greater => None,
+    //         }
+    //     }
+    //     None
+    // }
 }
 
 #[cfg(test)]

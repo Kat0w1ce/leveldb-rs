@@ -168,7 +168,7 @@ pub struct InternalKeyComparator<C: Comparator> {
 }
 
 impl<C: Comparator> InternalKeyComparator<C> {
-    fn new(cmp: C) -> Self {
+    pub fn new(cmp: C) -> Self {
         InternalKeyComparator {
             user_comparator: cmp,
         }
