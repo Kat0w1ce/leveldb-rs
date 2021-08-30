@@ -11,7 +11,8 @@ use crate::util::comparator::Comparator;
 use crate::util::status::Error;
 
 use super::format::{InternalKey, InternalKeyComparator, LookUpKey, ValueType};
-use super::iterator::LevedbIterator;
+use super::iterator::{self, LevedbIterator};
+use super::ldbiterator::LdbIterator;
 use super::skiplist::SkipListIterator;
 use super::SequenceNumber;
 
@@ -26,7 +27,6 @@ impl<C: Comparator + Clone> Comparator for KeyComparator<C> {
     fn compare(&self, a: &[u8], b: &[u8]) -> std::cmp::Ordering {
         let ia = extract_length_prefixed_slice(a);
         let ib = extract_length_prefixed_slice(b);
-        // println!("ia: {:?}\n ib: {:?}", ia, ib);
         if ia.is_empty() || ib.is_empty() {
             ia.cmp(&ib)
         } else {
@@ -82,7 +82,9 @@ impl<C: Comparator + Clone> MemTable<C> {
             std::mem::drop(self);
         }
     }
-
+    pub fn iter(&self) -> MemTableIterator<C> {
+        MemTableIterator::new(self.table.clone())
+    }
     pub fn approximate_memory_usage(&self) -> usize {
         self.table.total_size()
     }
@@ -112,7 +114,6 @@ impl<C: Comparator + Clone> MemTable<C> {
         buf.extend_from_slice(value);
 
         //addtional lock needed
-        // println!("buf :{:?}", buf);
         //dead lock?
         self.table.insert(buf);
     }
@@ -122,8 +123,6 @@ impl<C: Comparator + Clone> MemTable<C> {
     /// If memtable does not contain the key, return `None`
     pub fn get(&self, key: &LookUpKey) -> Option<Result<Vec<u8>, Error>> {
         let mem_key = key.memtable_key();
-        println!("mem_key: {:?}", mem_key);
-        // println!("memkey: {:?}", std::str::from_utf8(mem_key).unwrap());
         let mut iter = InlineSkiplistIterator::new(self.table.clone());
         iter.seek(mem_key);
         if iter.valid() {
@@ -139,12 +138,9 @@ impl<C: Comparator + Clone> MemTable<C> {
             let entry = iter.key();
 
             let (klen, size) = get_varint_32_prefix_ptr(0, 5, entry).unwrap();
-            // let user_key = get_length_prefixed_slice(entry);
-            // println!("entry: {:?}\n klen= {}  size: {}", entry, klen, size);
             let ikey_len = size + klen as usize;
             let user_key = &entry[size..ikey_len - 8];
             let val = &entry[ikey_len..];
-            println!("ukey: {:?} {:?}", user_key, key.user_key());
             match self
                 .key_comparator
                 .icmp
@@ -167,15 +163,64 @@ impl<C: Comparator + Clone> MemTable<C> {
     }
 }
 
-#[cfg(test)]
+pub struct MemTableIterator<C: Comparator + Clone> {
+    iter: InlineSkiplistIterator<KeyComparator<C>, OffsetArena>,
+    tmp: Vec<u8>,
+}
+
+impl<C: Comparator + Clone> MemTableIterator<C> {
+    pub fn new(table: InlineSkipList<KeyComparator<C>, OffsetArena>) -> Self {
+        let iter = InlineSkiplistIterator::new(table);
+        Self { iter, tmp: vec![] }
+    }
+}
+impl<C: Comparator + Clone> LdbIterator for MemTableIterator<C> {
+    fn seek_to_first(&mut self) {
+        self.iter.seek_to_first()
+    }
+    fn seek_to_last(&mut self) {
+        self.iter.seek_to_last();
+    }
+
+    fn next(&mut self) {
+        self.iter.next();
+    }
+    fn valid(&self) -> bool {
+        self.iter.valid()
+    }
+    fn key(&self) -> &[u8] {
+        let key = self.iter.key();
+        extract_length_prefixed_slice(key)
+    }
+    fn value(&self) -> &[u8] {
+        let key = self.iter.key();
+        get_varint_32_prefix_ptr(0, 0, &key)
+            .and_then(|(len, size)| {
+                Some(extract_length_prefixed_slice(&key[len as usize + size..]))
+            })
+            .unwrap()
+    }
+    fn seek(&mut self, target: &[u8]) {
+        self.tmp.clear();
+        put_length_prefixed_slice(&mut self.tmp, target);
+        self.iter.seek(&self.tmp);
+    }
+    fn prev(&mut self) {
+        self.iter.prev();
+    }
+    fn status(&self) {
+        unimplemented!()
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::MemTable;
     use crate::db::format::LookUpKey;
+    use crate::db::format::ParsedInteralKey;
     use crate::db::format::*;
+    use crate::db::ldbiterator::LdbIterator;
     use crate::util::comparator::BytewiseComparator;
     use std::str;
-
     fn new_mem_table() -> MemTable<BytewiseComparator> {
         let icmp = InternalKeyComparator::new(BytewiseComparator::default());
         MemTable::new(icmp, 1 << 32)
@@ -219,25 +264,25 @@ mod tests {
         let v = memtable.get(&LookUpKey::new(b"boo", 3));
         assert_eq!(b"boo", v.unwrap().unwrap().as_slice());
     }
-    /*
+
     #[test]
     fn test_memtable_iter() {
-        let memtable = new_mem_table();
+        let mut memtable = new_mem_table();
         let mut iter = memtable.iter();
         assert!(!iter.valid());
-        let entries = add_test_data_set(&memtable);
+        let entries = add_test_data_set(&mut memtable);
         // Forward scan
         iter.seek_to_first();
         assert!(iter.valid());
         for (key, value) in entries.iter() {
             let k = iter.key();
-            let pkey = ParsedInternalKey::decode_from(k).unwrap();
+            let pkey = ParsedInteralKey::decode_from(k).unwrap();
             assert_eq!(
-                pkey.as_str(),
+                pkey.user_key(),
                 *key,
                 "expected key: {:?}, but got {:?}",
                 *key,
-                pkey.as_str()
+                pkey.user_key()
             );
             assert_eq!(
                 str::from_utf8(iter.value()).unwrap(),
@@ -255,13 +300,13 @@ mod tests {
         assert!(iter.valid());
         for (key, value) in entries.iter().rev() {
             let k = iter.key();
-            let pkey = ParsedInternalKey::decode_from(k).unwrap();
+            let pkey = ParsedInteralKey::decode_from(k).unwrap();
             assert_eq!(
-                pkey.as_str(),
+                pkey.user_key(),
                 *key,
                 "expected key: {:?}, but got {:?}",
                 *key,
-                pkey.as_str()
+                pkey.user_key()
             );
             assert_eq!(
                 str::from_utf8(iter.value()).unwrap(),
@@ -274,5 +319,4 @@ mod tests {
         }
         assert!(!iter.valid());
     }
-    */
 }

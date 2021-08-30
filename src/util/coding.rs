@@ -358,8 +358,6 @@ mod tests {
         let mut decoded = vec![];
         for s in encoded {
             if let Some(res) = get_length_prefixed_slice(&s) {
-                println!("s: {:?}", s);
-                println!("res: {:?}", res);
                 decoded.push(res.to_owned());
             } else {
                 break;

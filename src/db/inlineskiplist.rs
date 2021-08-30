@@ -92,14 +92,14 @@ impl<A: ArenaTrait> Drop for InlineSkipListInner<A> {
 }
 
 #[derive(Clone)]
-pub struct InlineSkipList<C: Comparator, A: ArenaTrait + Clone + Send + Sync> {
+pub struct InlineSkipList<C: Comparator + Clone, A: ArenaTrait + Clone + Send + Sync> {
     inner: Arc<InlineSkipListInner<A>>,
     comparator: C,
 }
 
 impl<C, A> InlineSkipList<C, A>
 where
-    C: Comparator,
+    C: Comparator + Clone,
     A: ArenaTrait + Clone + Send + Sync,
 {
     pub fn new(comparator: C, arena: A) -> Self {
@@ -343,7 +343,7 @@ where
 
 pub struct InlineSkiplistIterator<C, A>
 where
-    C: Comparator,
+    C: Comparator + Clone,
     A: ArenaTrait + Clone + Send + Sync,
 {
     list: InlineSkipList<C, A>,
@@ -352,7 +352,7 @@ where
 
 impl<C, A> LevedbIterator for InlineSkiplistIterator<C, A>
 where
-    C: Comparator,
+    C: Comparator + Clone,
     A: ArenaTrait + Clone + Send + Sync,
 {
     #[inline]
@@ -404,7 +404,7 @@ where
 
 impl<C, A> InlineSkiplistIterator<C, A>
 where
-    C: Comparator,
+    C: Comparator + Clone,
     A: ArenaTrait + Clone + Send + Sync,
 {
     pub fn new(list: InlineSkipList<C, A>) -> Self {

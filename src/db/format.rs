@@ -1,5 +1,5 @@
 use crate::util::{
-    coding::{self, put_fixed_64, put_varint_32},
+    coding::{self, decode_fixed_64, put_fixed_64, put_varint_32},
     comparator::{self, Comparator},
 };
 use integer_encoding::{self, FixedInt};
@@ -45,7 +45,7 @@ fn pack_sequence_and_type(seq: u64, value_type: ValueType) -> u64 {
     seq << 8 | value_type as u64
 }
 
-fn append_Internal_key(dst: &mut Vec<u8>, key: &ParsedInterelKey) {
+fn append_Internal_key(dst: &mut Vec<u8>, key: &ParsedInteralKey) {
     dst.extend_from_slice(key.user_key);
     coding::put_fixed_64(dst, pack_sequence_and_type(key.sequence, key.value_type));
 }
@@ -61,7 +61,7 @@ fn extract_user_key(key: &[u8]) -> &[u8] {
     );
     &key[..size - 8]
 }
-pub struct ParsedInterelKey<'a> {
+pub struct ParsedInteralKey<'a> {
     user_key: &'a [u8],
     sequence: SequenceNumber,
     value_type: ValueType,
@@ -85,7 +85,7 @@ pub struct InternalKey {
     rep: Vec<u8>,
 }
 
-impl<'a> Debug for ParsedInterelKey<'a> {
+impl<'a> Debug for ParsedInteralKey<'a> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), std::fmt::Error> {
         write!(
             f,
@@ -94,26 +94,26 @@ impl<'a> Debug for ParsedInterelKey<'a> {
         )
     }
 }
-impl<'a> ParsedInterelKey<'a> {
-    fn new(key: &'a [u8], seq: SequenceNumber, value_type: ValueType) -> ParsedInterelKey<'a> {
-        ParsedInterelKey {
+impl<'a> ParsedInteralKey<'a> {
+    pub fn new(key: &'a [u8], seq: SequenceNumber, value_type: ValueType) -> ParsedInteralKey<'a> {
+        ParsedInteralKey {
             user_key: key,
             sequence: seq,
             value_type,
         }
     }
-    fn from(Internal_key: &'a InternalKey) -> ParsedInterelKey<'a> {
-        Internal_key.parse().unwrap()
+    pub fn from(internal_key: &'a InternalKey) -> ParsedInteralKey<'a> {
+        internal_key.parse().unwrap()
     }
-    fn decode_from(slice: &'a [u8]) -> Option<ParsedInterelKey<'a>> {
+    pub fn decode_from(slice: &'a [u8]) -> Option<ParsedInteralKey<'a>> {
         let len = slice.len();
         if len < 8 {
             return None;
         }
-        let num = u64::decode_fixed(&slice[0..len - 8]);
+        let num = decode_fixed_64(slice);
         let c = (num & 0xff) as u8;
 
-        Some(ParsedInterelKey {
+        Some(ParsedInteralKey {
             user_key: &slice[..len - 8],
             sequence: num >> 8,
             value_type: ValueType::from(c),
@@ -156,7 +156,7 @@ impl InternalKey {
     pub fn clear(&mut self) {
         self.rep.clear();
     }
-    pub fn parse(&self) -> Option<ParsedInterelKey<'_>> {
+    pub fn parse(&self) -> Option<ParsedInteralKey<'_>> {
         let len = self.rep.len();
         if len < 8 {
             return None;
@@ -165,7 +165,7 @@ impl InternalKey {
         let num = coding::decode_fixed_64(&self.rep[len - 8..]);
         let c = (num & 0xff) as u8;
 
-        Some(ParsedInterelKey {
+        Some(ParsedInteralKey {
             user_key: &self.rep[..len - 8],
             sequence: num >> 8,
             value_type: ValueType::from(c),
@@ -176,11 +176,11 @@ impl InternalKey {
 // A comparator for internal keys that uses a specified comparator for
 // the user key portion and breaks ties by decreasing sequence number.
 #[derive(Clone, Default)]
-pub struct InternalKeyComparator<C: Comparator + Clone> {
+pub struct InternalKeyComparator<C: Comparator> {
     pub user_comparator: C,
 }
 
-impl<C: Comparator + Clone> InternalKeyComparator<C> {
+impl<C: Comparator> InternalKeyComparator<C> {
     pub fn new(cmp: C) -> Self {
         InternalKeyComparator {
             user_comparator: cmp,
@@ -310,7 +310,6 @@ mod tests {
         ];
         for (seq, t, expect) in tests.drain(..) {
             let u = decode_fixed_64(expect.as_slice());
-            println!("seq: {}\n u:{}\n", seq, u);
             assert_eq!(pack_sequence_and_type(seq, t), u);
         }
     }

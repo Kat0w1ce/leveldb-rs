@@ -1,20 +1,19 @@
 use super::ldbslice::Slice;
 
 pub trait LdbIterator {
-    fn valid() -> bool;
+    fn valid(&self) -> bool;
     // An iterator is either positioned at a key/value pair, or
     // not valid.  This method returns true iff the iterator is valid.
-    fn seek_to_first(&self);
+    fn seek_to_first(&mut self);
 
-    fn seek_to_last(&self);
-    fn seek(&self, target: &Slice);
+    fn seek_to_last(&mut self);
+    fn seek(&mut self, target: &[u8]);
 
-    fn next();
+    fn next(&mut self);
 
-    fn key(&self) -> Slice;
+    fn key(&self) -> &[u8];
 
-    fn value(&self) -> Slice;
-
-    //cleanupfunction
-    // todo
+    fn value(&self) -> &[u8];
+    fn prev(&mut self);
+    fn status(&self);
 }
