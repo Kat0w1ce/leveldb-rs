@@ -3,8 +3,9 @@ use std::borrow::{Borrow, BorrowMut};
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use crate::db::skiplist::SkipList;
-use crate::util::arena::{self, ArenaTrait, BlockArena};
+// use crate::db::skiplist::SkipList;
+use crate::db::inlineskiplist::{InlineSkipList, InlineSkiplistIterator};
+use crate::util::arena::{self, ArenaTrait, BlockArena, OffsetArena};
 use crate::util::coding::*;
 use crate::util::comparator::Comparator;
 use crate::util::status::Error;
@@ -25,10 +26,11 @@ impl<C: Comparator + Clone> Comparator for KeyComparator<C> {
     fn compare(&self, a: &[u8], b: &[u8]) -> std::cmp::Ordering {
         let ia = extract_length_prefixed_slice(a);
         let ib = extract_length_prefixed_slice(b);
-        if a.is_empty() || b.is_empty() {
-            a.cmp(&b)
+        // println!("ia: {:?}\n ib: {:?}", ia, ib);
+        if ia.is_empty() || ib.is_empty() {
+            ia.cmp(&ib)
         } else {
-            self.icmp.compare(a, b)
+            self.icmp.compare(ia, ib)
         }
     }
     fn find_short_successor(&self, key: &[u8]) -> Vec<u8> {
@@ -53,14 +55,15 @@ impl<C: Comparator + Clone> Comparator for KeyComparator<C> {
 struct MemTable<C: Comparator + Clone> {
     key_comparator: KeyComparator<C>,
     refs: usize,
-    table: Arc<SkipList<KeyComparator<C>, BlockArena>>,
+    table: InlineSkipList<KeyComparator<C>, OffsetArena>,
 }
 
 impl<C: Comparator + Clone> MemTable<C> {
-    pub fn new(c: InternalKeyComparator<C>) -> Self {
+    pub fn new(c: InternalKeyComparator<C>, max_mem_size: usize) -> Self {
+        let arena = OffsetArena::with_capacity(max_mem_size);
         let ic = KeyComparator { icmp: c };
         let a = arena::BlockArena::default();
-        let table = Arc::new(SkipList::new(ic.clone(), a));
+        let table = InlineSkipList::new(ic.clone(), arena);
         // let table = Arc::new(SkipList::new(ic, a));
         Self {
             key_comparator: ic,
@@ -81,7 +84,7 @@ impl<C: Comparator + Clone> MemTable<C> {
     }
 
     pub fn approximate_memory_usage(&self) -> usize {
-        self.table.size()
+        self.table.total_size()
     }
 
     pub fn add(&mut self, s: SequenceNumber, valueType: ValueType, key: &[u8], value: &[u8]) {
@@ -99,7 +102,7 @@ impl<C: Comparator + Clone> MemTable<C> {
             + varint_length(val_size)
             + val_size;
         let mut buf = vec![];
-        put_varint_32(&mut buf, key_size as u32);
+        put_varint_32(&mut buf, internal_key_size as u32);
         // put InternalKey
         buf.extend_from_slice(key);
         put_fixed_64(&mut buf, (s << 8) | valueType as u64);
@@ -109,8 +112,9 @@ impl<C: Comparator + Clone> MemTable<C> {
         buf.extend_from_slice(value);
 
         //addtional lock needed
+        // println!("buf :{:?}", buf);
         //dead lock?
-        Arc::get_mut(&mut self.table).unwrap().insert(buf);
+        self.table.insert(buf);
     }
 
     /// If memtable contains a value for key, returns it in `Some(Ok())`.
@@ -120,7 +124,7 @@ impl<C: Comparator + Clone> MemTable<C> {
         let mem_key = key.memtable_key();
         println!("mem_key: {:?}", mem_key);
         // println!("memkey: {:?}", std::str::from_utf8(mem_key).unwrap());
-        let mut iter = SkipListIterator::new(self.table.clone());
+        let mut iter = InlineSkiplistIterator::new(self.table.clone());
         iter.seek(mem_key);
         if iter.valid() {
             // entry format is:
@@ -133,12 +137,20 @@ impl<C: Comparator + Clone> MemTable<C> {
             // sequence number since the Seek() call above should have skipped
             // all entries with overly large sequence numbers.
             let entry = iter.key();
+
             let (klen, size) = get_varint_32_prefix_ptr(0, 5, entry).unwrap();
             // let user_key = get_length_prefixed_slice(entry);
+            // println!("entry: {:?}\n klen= {}  size: {}", entry, klen, size);
             let ikey_len = size + klen as usize;
             let user_key = &entry[size..ikey_len - 8];
-            let val = &mem_key[size + klen as usize..];
-            match self.key_comparator.icmp.compare(user_key, key.user_key()) {
+            let val = &entry[ikey_len..];
+            println!("ukey: {:?} {:?}", user_key, key.user_key());
+            match self
+                .key_comparator
+                .icmp
+                .user_comparator
+                .compare(user_key, key.user_key())
+            {
                 std::cmp::Ordering::Equal => {
                     let tag = decode_fixed_64(&entry[ikey_len - 8..ikey_len]);
                     match ValueType::from(tag) {
@@ -166,7 +178,7 @@ mod tests {
 
     fn new_mem_table() -> MemTable<BytewiseComparator> {
         let icmp = InternalKeyComparator::new(BytewiseComparator::default());
-        MemTable::new(icmp)
+        MemTable::new(icmp, 1 << 32)
     }
 
     fn add_test_data_set(memtable: &mut MemTable<BytewiseComparator>) -> Vec<(&str, &str)> {
@@ -189,15 +201,15 @@ mod tests {
     fn test_memtable_add_get() {
         let mut memtable = new_mem_table();
         memtable.add(1, ValueType::KTypeValue, b"foo", b"val1");
-        memtable.add(2, ValueType::KTypeValue, b"foo2", b"val2");
-        memtable.add(3, ValueType::KTypeValue, b"foo3", b"");
-        memtable.add(4, ValueType::KTypeValue, b"foo4", b"val3");
-        memtable.add(2, ValueType::KTypeValue, b"boo5", b"boo");
+        memtable.add(2, ValueType::KTypeValue, b"foo", b"val2");
+        memtable.add(3, ValueType::KTypeDeletion, b"foo", b"");
+        memtable.add(4, ValueType::KTypeValue, b"foo", b"val3");
+        memtable.add(2, ValueType::KTypeValue, b"boo", b"boo");
 
         let v = memtable.get(&LookUpKey::new(b"null", 10));
         assert!(v.is_none());
         let v = memtable.get(&LookUpKey::new(b"foo", 10));
-        assert_eq!(b"val1", v.unwrap().unwrap().as_slice());
+        assert_eq!(b"val3", v.unwrap().unwrap().as_slice());
         let v = memtable.get(&LookUpKey::new(b"foo", 0));
         assert!(v.is_none());
         let v = memtable.get(&LookUpKey::new(b"foo", 1));

@@ -71,13 +71,63 @@ impl Comparator for BytewiseComparator {
     fn find_short_successor(&self, key: &[u8]) -> Vec<u8> {
         // Find first character that can be incremented
         for i in 0..key.len() {
-            if key[i] != 0xff as u8 {
+            let byte = key[i];
+            if byte != 0xff {
                 let mut rst = vec![0; i + 1];
-                rst[0..=i].copy_from_slice(&key[0..i]);
+                rst[0..=i].copy_from_slice(&key[0..=i]);
                 *(rst.last_mut()).unwrap() += 1;
                 return rst;
             }
         }
         key.to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bytewise_comparator_separator() {
+        let mut tests = vec![
+            ("", "1111", ""),
+            ("1111", "", "1111"),
+            ("1111", "111", "1111"),
+            ("123", "1234", "123"),
+            ("1234", "1234", "1234"),
+            ("1", "2", "1"),
+            ("1357", "2", "1357"),
+            ("1111", "12345", "1111"),
+            ("1111", "13345", "12"),
+        ];
+        let c = BytewiseComparator::default();
+        for (a, b, expect) in tests.drain(..) {
+            let res = c.find_shortest_separator(a.as_bytes(), b.as_bytes());
+            assert_eq!(std::str::from_utf8(&res).unwrap(), expect);
+        }
+        // special 0xff case
+        let a: Vec<u8> = vec![48, 255];
+        let b: Vec<u8> = vec![48, 49, 50, 51];
+        let res = c.find_shortest_separator(a.as_slice(), b.as_slice());
+        assert_eq!(res, a);
+    }
+
+    #[test]
+    fn test_bytewise_comparator_successor() {
+        let mut tests = vec![("", ""), ("111", "2"), ("222", "3")];
+        let c = BytewiseComparator::default();
+        for (input, expect) in tests.drain(..) {
+            let res = c.find_short_successor(input.as_bytes());
+            assert_eq!(std::str::from_utf8(&res).unwrap(), expect);
+        }
+        // special 0xff case
+        let mut corner_tests = vec![
+            (vec![0xff, 0xff, 1], vec![255u8, 255u8, 2]),
+            (vec![0xff, 0xff, 0xff], vec![255u8, 255u8, 255u8]),
+        ];
+        for (input, expect) in corner_tests.drain(..) {
+            let res = c.find_short_successor(input.as_slice());
+            assert_eq!(res, expect)
+        }
     }
 }

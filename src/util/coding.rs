@@ -2,17 +2,6 @@ use integer_encoding::{self, FixedInt, VarInt};
 
 pub const MAX_VARINT_LEN_U32: usize = 5;
 pub const MAX_VARINT_LEN_U64: usize = 10;
-pub fn get_varint_32_prefix_ptr(p: usize, limit: usize, key: &[u8]) -> Option<(u32, usize)> {
-    if key.len() == 0 {
-        return None;
-    }
-    for (i, &b) in key.iter().enumerate() {
-        if b < 128u8 {
-            return u32::decode_var(&key[..i + 1]);
-        }
-    }
-    None
-}
 
 // sliceFormat:
 // len: varint32
@@ -57,9 +46,27 @@ pub fn varint_length(value: usize) -> usize {
     len
 }
 
+pub fn get_varint_32_prefix_ptr(p: usize, limit: usize, key: &[u8]) -> Option<(u32, usize)> {
+    if key.len() == 0 {
+        return None;
+    }
+    for (i, &b) in key.iter().enumerate() {
+        if b < 128u8 {
+            return u32::decode_var(&key[..i + 1]);
+        }
+    }
+    // for mut i in 0..key.len() {
+    //     if key[i] < 128u8 {
+    //         i += 8;
+    //     } else {
+    //         return u32::decode_var(&key[0..i + 8]);
+    //     }
+    // }
+    None
+}
 pub fn extract_length_prefixed_slice(data: &[u8]) -> &[u8] {
     let (len, size) = get_varint_32_prefix_ptr(0, 5, &data).unwrap();
-    &data[0..size + len as usize]
+    &data[1..size + len as usize]
 }
 pub fn put_length_prefixed_slice(dst: &mut Vec<u8>, value: &[u8]) {
     put_varint_32(dst, value.len() as u32);
@@ -68,8 +75,8 @@ pub fn put_length_prefixed_slice(dst: &mut Vec<u8>, value: &[u8]) {
 
 pub fn get_length_prefixed_slice(data: &[u8]) -> Option<Vec<u8>> {
     match get_varint_32_prefix_ptr(0, data.len(), &data) {
-        Some((len, size)) => return Some(data[size..size + len as usize].to_vec()),
-        None => (),
+        Some((value, len)) => return Some(data[len..].to_vec()),
+        None => return Some(data.to_vec()),
     };
     None
 }

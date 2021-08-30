@@ -24,7 +24,7 @@ impl From<u8> for ValueType {
 }
 impl From<u64> for ValueType {
     fn from(x: u64) -> Self {
-        match x {
+        match x & 0xff {
             0 => ValueType::KTypeDeletion,
             _ => ValueType::KTypeValue,
         }
@@ -32,10 +32,15 @@ impl From<u64> for ValueType {
 }
 pub const VALUE_TYPE_FOR_SEEK: ValueType = ValueType::KTypeValue;
 
-pub const K_MAX_SEQUENCE_NUMBER: u64 = 1u64 << 56;
+pub const K_MAX_SEQUENCE_NUMBER: u64 = (1u64 << 56) - 1;
 
 fn pack_sequence_and_type(seq: u64, value_type: ValueType) -> u64 {
-    assert!(seq <= K_MAX_SEQUENCE_NUMBER);
+    assert!(
+        seq <= K_MAX_SEQUENCE_NUMBER,
+        "[key seq] the sequence number should be <= {}, but got {}",
+        K_MAX_SEQUENCE_NUMBER,
+        seq
+    );
     // assert!(t <= VALUE_TYPE_FOR_SEEK)
     seq << 8 | value_type as u64
 }
@@ -192,6 +197,7 @@ impl<C: Comparator + Clone> Comparator for InternalKeyComparator<C> {
 
         let ua = extract_user_key(a);
         let ub = extract_user_key(b);
+        #[allow(clippy::comparison_chain)]
         match self.user_comparator.compare(ua, ub) {
             std::cmp::Ordering::Less => std::cmp::Ordering::Less,
             std::cmp::Ordering::Equal => {
@@ -304,6 +310,7 @@ mod tests {
         ];
         for (seq, t, expect) in tests.drain(..) {
             let u = decode_fixed_64(expect.as_slice());
+            println!("seq: {}\n u:{}\n", seq, u);
             assert_eq!(pack_sequence_and_type(seq, t), u);
         }
     }

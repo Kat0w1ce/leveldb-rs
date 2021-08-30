@@ -189,7 +189,7 @@ where
         }
     }
 
-    pub fn put(&self, key: impl Into<Bytes>) {
+    pub fn insert(&self, key: impl Into<Bytes>) {
         let key: Bytes = key.into();
         self.inner.size.fetch_add(key.len(), Ordering::SeqCst);
         let mut list_height = self.get_height();
@@ -452,7 +452,7 @@ mod tests {
         let l = InlineSkipList::new(cmp, arena);
         for i in 0..1000 {
             let key = format!("{:05}{:08}", i * 10 + 5, 0);
-            l.put(key);
+            l.insert(key);
         }
         let cases = vec![
             ("00001", false, false, Some("00005")),
@@ -521,7 +521,7 @@ mod tests {
         let table = vec!["key1", "key2", "key3", "key4", "key5"];
 
         for key in table.clone() {
-            list.put(key.as_bytes());
+            list.insert(key.as_bytes());
         }
         assert_eq!(list.len(), 5);
         assert!(!list.is_empty());
@@ -547,53 +547,53 @@ mod tests {
         assert_eq!(iter.key(), table.last().unwrap().as_bytes());
     }
 
-    // fn test_concurrent_basic(n: usize, cap: usize, key_len: usize) {
-    //     let cmp = BytewiseComparator::default();
-    //     let arena = OffsetArena::with_capacity(cap);
-    //     let skl = InlineSkipList::new(cmp, arena);
-    //     let keys: Vec<_> = (0..n)
-    //         .map(|i| format!("{1:00$}", key_len, i).to_owned())
-    //         .collect();
-    //     let (tx, rx) = mpsc::channel();
-    //     for key in keys.clone() {
-    //         let tx = tx.clone();
-    //         let l = skl.clone();
-    //         thread::Builder::new()
-    //             .name("write thread".to_owned())
-    //             .spawn(move || {
-    //                 l.put(key);
-    //                 tx.send(()).unwrap();
-    //             })
-    //             .unwrap();
-    //     }
-    //     for _ in 0..n {
-    //         rx.recv_timeout(Duration::from_secs(3)).unwrap();
-    //     }
-    //     for key in keys {
-    //         let tx = tx.clone();
-    //         let l = skl.clone();
-    //         thread::Builder::new()
-    //             .name("read thread".to_owned())
-    //             .spawn(move || {
-    //                 let mut iter = InlineSkiplistIterator::new(l);
-    //                 iter.seek(key.as_bytes());
-    //                 assert_eq!(iter.key(), key.as_bytes());
-    //                 tx.send(()).unwrap();
-    //             })
-    //             .unwrap();
-    //     }
-    //     for _ in 0..n {
-    //         rx.recv_timeout(Duration::from_secs(3)).unwrap();
-    //     }
-    //     assert_eq!(skl.len(), n);
-    // }
+    fn test_concurrent_basic(n: usize, cap: usize, key_len: usize) {
+        let cmp = BytewiseComparator::default();
+        let arena = OffsetArena::with_capacity(cap);
+        let skl = InlineSkipList::new(cmp, arena);
+        let keys: Vec<_> = (0..n)
+            .map(|i| format!("{1:00$}", key_len, i).to_owned())
+            .collect();
+        let (tx, rx) = mpsc::channel();
+        for key in keys.clone() {
+            let tx = tx.clone();
+            let l = skl.clone();
+            thread::Builder::new()
+                .name("write thread".to_owned())
+                .spawn(move || {
+                    l.insert(key);
+                    tx.send(()).unwrap();
+                })
+                .unwrap();
+        }
+        for _ in 0..n {
+            rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        }
+        for key in keys {
+            let tx = tx.clone();
+            let l = skl.clone();
+            thread::Builder::new()
+                .name("read thread".to_owned())
+                .spawn(move || {
+                    let mut iter = InlineSkiplistIterator::new(l);
+                    iter.seek(key.as_bytes());
+                    assert_eq!(iter.key(), key.as_bytes());
+                    tx.send(()).unwrap();
+                })
+                .unwrap();
+        }
+        for _ in 0..n {
+            rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        }
+        assert_eq!(skl.len(), n);
+    }
 
-    // #[test]
-    // fn test_concurrent_basic_small_value() {
-    //     test_concurrent_basic(1000, 1 << 20, 5);
-    // }
-    // #[test]
-    // fn test_concurrent_basic_big_value() {
-    //     test_concurrent_basic(100, 120 << 20, 10);
-    // }
+    #[test]
+    fn test_concurrent_basic_small_value() {
+        test_concurrent_basic(1000, 1 << 20, 5);
+    }
+    #[test]
+    fn test_concurrent_basic_big_value() {
+        test_concurrent_basic(100, 120 << 20, 10);
+    }
 }
