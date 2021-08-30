@@ -1,4 +1,5 @@
 // mod dbformat;
+mod block;
 mod format;
 mod inlineskiplist;
 mod iterator;
