@@ -1,5 +1,6 @@
 // mod dbformat;
 mod format;
+mod inlineskiplist;
 mod iterator;
 mod ldbiterator;
 mod ldbslice;

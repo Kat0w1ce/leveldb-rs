@@ -7,6 +7,7 @@ use rand::Rng;
 use std::borrow::BorrowMut;
 
 use std::cell::RefCell;
+use std::fmt::Debug;
 use std::mem::{self, replace, size_of};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
@@ -21,7 +22,6 @@ fn random_height() -> usize {
     rand::thread_rng().gen_range(1, MAX_HEIGHT)
 }
 
-#[derive(Debug)]
 #[repr(C)]
 struct Node {
     // The pointer and length pointing to the memory location
@@ -84,7 +84,14 @@ impl Node {
         self.key.as_ref()
     }
 }
-
+impl Debug for Node {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Node")
+            .field("key", &self.key)
+            .field("height", &self.height)
+            .finish()
+    }
+}
 pub struct SkipList<C: Comparator, A: ArenaTrait> {
     max_height: AtomicUsize,
     head: *const Node,
@@ -125,6 +132,7 @@ impl<C: Comparator, A: ArenaTrait> SkipList<C, A> {
         loop {
             unsafe {
                 let next = (*node).next(level);
+                // println!("node:{:?}", *next);
                 if self.key_is_after_node(key, next) {
                     node = next;
                 } else {
@@ -137,18 +145,6 @@ impl<C: Comparator, A: ArenaTrait> SkipList<C, A> {
                         level -= 1;
                     }
                 }
-                // if self.key_is_less_than_or_equal(key, next) {
-                //     if let Some(ref mut p) = prev {
-                //         p[level - 1] = node;
-                //     }
-                //     if level == 1 {
-                //         return next;
-                //     } else {
-                //         level -= 1;
-                //     }
-                // } else {
-                //     node = next;
-                // }
             }
         }
     }
@@ -221,6 +217,7 @@ impl<C: Comparator, A: ArenaTrait> SkipList<C, A> {
     // Return true if key is greater than the data stored in "n"
     fn key_is_after_node(&self, key: &[u8], node: *mut Node) -> bool {
         unsafe {
+            println!("{:?}", (*node).key());
             !node.is_null()
                 && self.compare.compare((*node).key(), key.as_ref()) == std::cmp::Ordering::Less
         }
@@ -408,8 +405,9 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
     fn test_key_is_after_node() {
-        let key: Bytes = Bytes::from("key2");
+        let key: Bytes = Bytes::from("foo");
         let mut a = BlockArena::default();
         let skl = new_test_skl();
         let node1 = Node::new(Bytes::from("key1"), 12, &mut a) as *mut Node;

@@ -1,27 +1,98 @@
 use std::cell::RefCell;
-use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::{mem, ptr};
 // use std::mem;
 // use std::mem::size_of;
 const BLOCK_SIZE: usize = 4096;
 
-pub trait ArenaTrait {
-    // return the start pointer to  an allocated memory of size bytes
-
-    unsafe fn allocate<T>(&mut self, size: usize, align: usize) -> *mut T;
-
-    fn memory_used(&self) -> usize;
+#[derive(Clone)]
+pub struct OffsetArena {
+    inner: Arc<OffsetArenaInner>,
 }
 
 struct OffsetArenaInner {
-    used: AtomicUsize,
+    len: AtomicUsize,
     cap: usize,
     ptr: *mut u8,
 }
 
-pub struct OffsetArena {
-    arenaInner: Arc<OffsetArenaInner>,
+impl Drop for OffsetArenaInner {
+    fn drop(&mut self) {
+        // manully drop ArenaInner
+        if !self.ptr.is_null() {
+            unsafe {
+                let ptr = self.ptr as *mut u64;
+                let cap = self.cap / 8;
+                Vec::from_raw_parts(ptr, 0, cap);
+            }
+        }
+    }
+}
+impl ArenaTrait for OffsetArena {
+    unsafe fn allocate<T>(&self, chunk: usize, align: usize) -> *mut T {
+        unsafe {
+            let offset = self.alloc(align, chunk);
+            self.get_mut(offset)
+        }
+    }
+
+    /// Return the size of memory that has been allocated.
+    fn memory_used(&self) -> usize {
+        self.inner.len.load(Ordering::SeqCst)
+    }
+}
+
+unsafe impl Send for OffsetArena {}
+unsafe impl Sync for OffsetArena {}
+
+impl OffsetArena {
+    // The real cap will be aligned with 8
+    pub fn with_capacity(cap: usize) -> Self {
+        let mut buf: Vec<u64> = Vec::with_capacity(cap / 8);
+        let ptr = buf.as_mut_ptr() as *mut u8;
+        let cap = buf.capacity() * 8;
+        let inner = Arc::new(OffsetArenaInner {
+            len: AtomicUsize::new(1),
+            cap,
+            ptr,
+        });
+        mem::forget(buf);
+        OffsetArena { inner }
+    }
+
+    // Allocates `size` bytes aligned with `align`
+    fn alloc(&self, align: usize, size: usize) -> usize {
+        let align_mask = align - 1;
+        // Leave enough padding for align.
+        let size = size + align_mask;
+        let offset = self.inner.len.fetch_add(size, Ordering::SeqCst);
+        // (offset + align_mask) / align * align.
+        let ptr_offset = (offset + align_mask) & !align_mask;
+        assert!(
+            offset + size <= self.inner.cap,
+            "current {}, cap {}",
+            offset + size,
+            self.inner.cap
+        );
+        ptr_offset
+    }
+
+    // Returns a raw pointer with given arena offset
+    unsafe fn get_mut<N>(&self, offset: usize) -> *mut N {
+        if offset == 0 {
+            return ptr::null_mut();
+        }
+        self.inner.ptr.add(offset) as _
+    }
+}
+
+pub trait ArenaTrait {
+    // return the start pointer to  an allocated memory of size bytes
+
+    unsafe fn allocate<T>(&self, size: usize, align: usize) -> *mut T;
+
+    fn memory_used(&self) -> usize;
 }
 
 // impl ArenaTrait for ArenaInner {
@@ -39,92 +110,172 @@ pub struct OffsetArena {
 /// `BlockArena` must only be used with single thread writing since we use `RefCell` when
 /// allocating new blocks.
 // reference from  leveldb arena
+// pub struct BlockArena {
+//     alloc_ptr: *mut u8,
+//     alloc_bytes_remaining: usize,
+//     blocks: RefCell<Vec<Vec<u8>>>,
+//     // Total memory usage of the arena.
+//     // comments in leveldb
+//     // TODO(costan): This member is accessed via atomics, but the others are
+//     //               accessed without any locking. Is this OK?
+//     memory_usage: AtomicUsize,
+// }
+// pub struct LockFreeBlockArena {
+//     alloc_ptr: AtomicPtr<u8>,
+//     alloc_bytes_remaining: usize,
+//     // is there a conllection which writing lock-free and threadsafe
+//     blocks: RefCell<Vec<Vec<u8>>>,
+//     // Total memory usage of the arena.
+//     // comments in leveldb
+//     // TODO(costan): This member is accessed via atomics, but the others are
+//     //               accessed without any locking. Is this OK?
+//     memory_usage: AtomicUsize,
+// }
+// impl Default for BlockArena {
+//     fn default() -> Self {
+//         BlockArena {
+//             alloc_ptr: ptr::null_mut(),
+//             alloc_bytes_remaining: 0,
+//             blocks: RefCell::new(vec![]),
+//             memory_usage: AtomicUsize::new(0),
+//         }
+//     }
+// }
+
+// impl BlockArena {
+//     fn allocate_new_block(&self, bytes: usize) -> *mut u8 {
+//         let mut new_block = vec![0; bytes];
+//         let p = new_block.as_mut_ptr();
+//         self.blocks.borrow_mut().push(new_block);
+//         self.memory_usage.fetch_add(bytes, Ordering::Relaxed);
+//         p
+//     }
+
+//     //katowizz TODO
+//     //&mut self might cause ownership problem
+//     fn allocate_fallback(&mut self, size: usize) -> *mut u8 {
+//         if size > BLOCK_SIZE >> 2 {
+//             // Object is more than a quarter of our block size.  Allocate it separately
+//             // to avoid wasting too much space in leftover bytes.
+//             return self.allocate_new_block(size);
+//         }
+//         let new_block_ptr = self.allocate_new_block(BLOCK_SIZE);
+
+//         unsafe {
+//             let ptr = new_block_ptr.add(size);
+//             self.alloc_ptr = ptr;
+//         }
+//         self.alloc_bytes_remaining = BLOCK_SIZE - size;
+//         new_block_ptr
+//     }
+
+//     //TODO
+//     //only support 64-bit system
+//     fn allocate_aligned(&mut self, bytes: usize, align: usize) -> *mut u8 {
+//         // A & (B-1) = A % B
+//         let current_mod = self.alloc_ptr as usize & (align - 1);
+//         let slop = if current_mod == 0 {
+//             0
+//         } else {
+//             align - current_mod
+//         };
+//         let needed = bytes + slop;
+//         if needed <= self.alloc_bytes_remaining {
+//             unsafe {
+//                 let result = self.alloc_ptr.add(slop);
+//                 self.alloc_ptr = self.alloc_ptr.add(needed);
+//                 self.alloc_bytes_remaining -= needed;
+//                 return result;
+//             }
+//         } else {
+//             self.allocate_fallback(bytes)
+//         }
+//     }
+// }
+
+// impl ArenaTrait for BlockArena {
+//     unsafe fn allocate<T>(&self, size: usize, align: usize) -> *mut T {
+//         unsafe {
+
+//             (*self).allocate_aligned(size, align) as *mut T
+//         }
+//     }
+
+//     #[inline]
+//     fn memory_used(&self) -> usize {
+//         self.memory_usage.load(Ordering::Acquire)
+//     }
+// }
+
+#[derive(Default)]
 pub struct BlockArena {
-    alloc_ptr: *mut u8,
-    alloc_bytes_remaining: usize,
-    blocks: RefCell<Vec<Vec<u8>>>,
-    // Total memory usage of the arena.
-    // comments in leveldb
-    // TODO(costan): This member is accessed via atomics, but the others are
-    //               accessed without any locking. Is this OK?
-    memory_usage: AtomicUsize,
-}
-pub struct LockFreeBlockArena {
     alloc_ptr: AtomicPtr<u8>,
-    alloc_bytes_remaining: usize,
-    // is there a conllection which writing lock-free and threadsafe
+    alloc_bytes_remaining: AtomicUsize,
     blocks: RefCell<Vec<Vec<u8>>>,
     // Total memory usage of the arena.
-    // comments in leveldb
-    // TODO(costan): This member is accessed via atomics, but the others are
-    //               accessed without any locking. Is this OK?
     memory_usage: AtomicUsize,
-}
-impl Default for BlockArena {
-    fn default() -> Self {
-        BlockArena {
-            alloc_ptr: ptr::null_mut(),
-            alloc_bytes_remaining: 0,
-            blocks: RefCell::new(vec![]),
-            memory_usage: AtomicUsize::new(0),
-        }
-    }
 }
 
 impl BlockArena {
-    fn allocate_new_block(&self, bytes: usize) -> *mut u8 {
-        let mut new_block = vec![0; bytes];
-        let p = new_block.as_mut_ptr();
-        self.blocks.borrow_mut().push(new_block);
-        self.memory_usage.fetch_add(bytes, Ordering::Relaxed);
-        p
-    }
-
-    //katowizz TODO
-    //&mut self might cause ownership problem
-    fn allocate_fallback(&mut self, size: usize) -> *mut u8 {
-        if size > BLOCK_SIZE >> 2 {
+    fn allocate_fallback(&self, size: usize) -> *mut u8 {
+        if size > BLOCK_SIZE / 4 {
             // Object is more than a quarter of our block size.  Allocate it separately
             // to avoid wasting too much space in leftover bytes.
             return self.allocate_new_block(size);
         }
+        // create a new full block
         let new_block_ptr = self.allocate_new_block(BLOCK_SIZE);
-
         unsafe {
             let ptr = new_block_ptr.add(size);
-            self.alloc_ptr = ptr;
-        }
-        self.alloc_bytes_remaining = BLOCK_SIZE - size;
+            self.alloc_ptr.store(ptr, Ordering::Release);
+        };
+        self.alloc_bytes_remaining
+            .store(BLOCK_SIZE - size, Ordering::Release);
         new_block_ptr
     }
 
-    //TODO
-    //only support 64-bit system
-    fn allocate_aligned(&mut self, bytes: usize, align: usize) -> *mut u8 {
-        // A & (B-1) = A % B
-        let current_mod = self.alloc_ptr as usize & (align - 1);
-        let slop = if current_mod == 0 {
-            0
-        } else {
-            align - current_mod
-        };
-        let needed = bytes + slop;
-        if needed <= self.alloc_bytes_remaining {
-            unsafe {
-                let result = self.alloc_ptr.add(slop);
-                self.alloc_ptr = self.alloc_ptr.add(needed);
-                self.alloc_bytes_remaining -= needed;
-                return result;
-            }
-        } else {
-            self.allocate_fallback(bytes)
-        }
+    fn allocate_new_block(&self, block_bytes: usize) -> *mut u8 {
+        let mut new_block = vec![0; block_bytes];
+        let p = new_block.as_mut_ptr();
+        self.blocks.borrow_mut().push(new_block);
+        self.memory_usage.fetch_add(block_bytes, Ordering::Relaxed);
+        p
     }
 }
 
 impl ArenaTrait for BlockArena {
-    unsafe fn allocate<T>(&mut self, size: usize, align: usize) -> *mut T {
-        self.allocate_aligned(size, align) as *mut T
+    unsafe fn allocate<T>(&self, chunk: usize, align: usize) -> *mut T {
+        assert!(chunk > 0);
+        let ptr_size = mem::size_of::<usize>();
+        // the align should be a pow(2)
+        assert_eq!(align & (align - 1), 0);
+
+        let slop = {
+            let current_mod = self.alloc_ptr.load(Ordering::Acquire) as usize & (align - 1);
+            if current_mod == 0 {
+                0
+            } else {
+                align - current_mod
+            }
+        };
+        let needed = chunk + slop;
+        let result = if needed <= self.alloc_bytes_remaining.load(Ordering::Acquire) {
+            // padding to align
+            let p = self.alloc_ptr.load(Ordering::Acquire).add(slop);
+            self.alloc_ptr.store(p.add(chunk), Ordering::Release);
+            self.alloc_bytes_remaining
+                .fetch_sub(needed, Ordering::SeqCst);
+            p
+        } else {
+            self.allocate_fallback(chunk)
+        };
+        assert_eq!(
+            result as usize & (align - 1),
+            0,
+            "allocated memory should be aligned with {}",
+            ptr_size
+        );
+        result as *mut T
     }
 
     #[inline]
@@ -134,7 +285,6 @@ impl ArenaTrait for BlockArena {
 }
 
 #[cfg(test)]
-
 mod tests {
     // use self::arena::{Arena, BlockArena, BLOCK_SIZE};
     use crate::util::arena::{ArenaTrait, BlockArena, BLOCK_SIZE};
@@ -145,8 +295,8 @@ mod tests {
     fn test_new_arena() {
         let a = BlockArena::default();
         assert_eq!(a.memory_used(), 0);
-        assert_eq!(a.alloc_bytes_remaining, 0);
-        assert_eq!(a.alloc_ptr, ptr::null_mut());
+        assert_eq!(a.alloc_bytes_remaining.load(Ordering::Acquire), 0);
+        assert_eq!(a.alloc_ptr.load(Ordering::Acquire), ptr::null_mut());
         assert_eq!(a.blocks.borrow().len(), 0);
     }
 
@@ -178,7 +328,10 @@ mod tests {
         assert_eq!(a.memory_used(), 0);
         a.allocate_fallback(1);
         assert_eq!(a.memory_used(), BLOCK_SIZE);
-        assert_eq!(a.alloc_bytes_remaining, BLOCK_SIZE - 1);
+        assert_eq!(
+            a.alloc_bytes_remaining.load(Ordering::Acquire),
+            BLOCK_SIZE - 1
+        );
         a.allocate_fallback(BLOCK_SIZE / 4 + 1);
         assert_eq!(a.memory_used(), BLOCK_SIZE + BLOCK_SIZE / 4 + 1);
     }

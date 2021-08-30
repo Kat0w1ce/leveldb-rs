@@ -56,6 +56,11 @@ pub fn varint_length(value: usize) -> usize {
     }
     len
 }
+
+pub fn extract_length_prefixed_slice(data: &[u8]) -> &[u8] {
+    let (len, size) = get_varint_32_prefix_ptr(0, 5, &data).unwrap();
+    &data[0..size + len as usize]
+}
 pub fn put_length_prefixed_slice(dst: &mut Vec<u8>, value: &[u8]) {
     put_varint_32(dst, value.len() as u32);
     dst.extend_from_slice(value);
@@ -335,7 +340,7 @@ mod tests {
     #[test]
     fn test_put_and_get_prefixed_slice() {
         let mut encoded: Vec<Vec<u8>> = vec![];
-        let tests: Vec<Vec<u8>> = vec![vec![1], vec![1, 2, 3, 4, 5], vec![0; 100]];
+        let tests: Vec<Vec<u8>> = vec![vec![1], vec![1, 2, 3, 4, 5], vec![0; 100], vec![0; 257]];
         for input in tests.clone() {
             let mut buf = vec![];
             put_length_prefixed_slice(&mut buf, &input);
@@ -346,6 +351,7 @@ mod tests {
         let mut decoded = vec![];
         for s in encoded {
             if let Some(res) = get_length_prefixed_slice(&s) {
+                println!("s: {:?}", s);
                 println!("res: {:?}", res);
                 decoded.push(res.to_owned());
             } else {

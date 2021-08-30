@@ -22,6 +22,14 @@ impl From<u8> for ValueType {
         }
     }
 }
+impl From<u64> for ValueType {
+    fn from(x: u64) -> Self {
+        match x {
+            0 => ValueType::KTypeDeletion,
+            _ => ValueType::KTypeValue,
+        }
+    }
+}
 pub const VALUE_TYPE_FOR_SEEK: ValueType = ValueType::KTypeValue;
 
 pub const K_MAX_SEQUENCE_NUMBER: u64 = 1u64 << 56;
@@ -163,11 +171,11 @@ impl InternalKey {
 // A comparator for internal keys that uses a specified comparator for
 // the user key portion and breaks ties by decreasing sequence number.
 #[derive(Clone, Default)]
-pub struct InternalKeyComparator<C: Comparator> {
-    user_comparator: C,
+pub struct InternalKeyComparator<C: Comparator + Clone> {
+    pub user_comparator: C,
 }
 
-impl<C: Comparator> InternalKeyComparator<C> {
+impl<C: Comparator + Clone> InternalKeyComparator<C> {
     pub fn new(cmp: C) -> Self {
         InternalKeyComparator {
             user_comparator: cmp,
@@ -175,7 +183,7 @@ impl<C: Comparator> InternalKeyComparator<C> {
     }
 }
 
-impl<C: Comparator> Comparator for InternalKeyComparator<C> {
+impl<C: Comparator + Clone> Comparator for InternalKeyComparator<C> {
     fn compare(&self, a: &[u8], b: &[u8]) -> std::cmp::Ordering {
         // Order by:
         //    increasing user key (according to user-supplied comparator)
@@ -268,7 +276,7 @@ impl LookUpKey {
     pub fn user_key(&self) -> &[u8] {
         &self.space[self.kstart..self.space.len() - 8]
     }
-    pub fn New(user_key: &[u8], s: SequenceNumber) -> LookUpKey {
+    pub fn new(user_key: &[u8], s: SequenceNumber) -> LookUpKey {
         let mut space = vec![];
 
         put_varint_32(&mut space, user_key.len() as u32 + 8);

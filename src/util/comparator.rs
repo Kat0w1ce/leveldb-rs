@@ -19,7 +19,7 @@ pub trait Comparator {
     fn find_short_successor(&self, key: &[u8]) -> Vec<u8>;
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct BytewiseComparator {}
 
 impl Comparator for BytewiseComparator {
